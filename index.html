@@ -1,0 +1,592 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Box Serial Scanner</title>
+<meta name="theme-color" content="#f5c400">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Box Scan">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<style>
+/* Layout: one column for a phone held in one hand; live camera on top, the box being filled below it, then the log. */
+:root {
+  --bg: #eef0ee; --surface: #ffffff; --ink: #15191d; --muted: #5b646c; --line: #d3d8d6;
+  --signal: #f5c400; --signal-ink: #1a1600;
+  --ok: #1d7a4a; --ok-bg: #e2f3e9; --warn: #8a5a00; --warn-bg: #fdf0cf; --bad: #b3261e; --bad-bg: #fbe3e1;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111416; --surface: #1b1f22; --ink: #e9ecea; --muted: #9aa4ab; --line: #2e3439;
+    --ok: #6fd39b; --ok-bg: #173325; --warn: #f2c46b; --warn-bg: #3a2e12; --bad: #ff8a80; --bad-bg: #3d1a18;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 var(--f-body);
+  padding: max(12px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) calc(48px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+}
+.wrap { max-width: 560px; margin: 0 auto; display: grid; gap: 14px; }
+h1, h2 { font-family: var(--f-display); margin: 0; }
+h1 { font-size: 24px; font-weight: 700; }
+h2 { font-size: 18px; font-weight: 600; }
+.eyebrow { font: 600 12px var(--f-display); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+header { display: flex; justify-content: space-between; align-items: end; gap: 12px; }
+.modelchip {
+  display: grid; text-align: left; gap: 0; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  border-radius: 10px; padding: 6px 12px; cursor: pointer; min-width: 0;
+}
+.modelchip b { font: 600 15px var(--f-mono); overflow-wrap: anywhere; }
+.modelchip small { font-size: 11px; color: var(--muted); }
+.tally { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.tally div { background: var(--surface); padding: 8px 14px; }
+.tally b { display: block; font: 600 26px/1.1 var(--f-mono); }
+
+.btn {
+  font: 600 16px/1 var(--f-body); border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  border-radius: 10px; padding: 12px 16px; min-height: 46px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+}
+.btn:focus-visible, input:focus-visible, .modelchip:focus-visible { outline: 3px solid var(--signal); outline-offset: 2px; }
+.btn.primary { background: var(--signal); color: var(--signal-ink); border-color: transparent; }
+.btn.small { min-height: 36px; padding: 8px 12px; font-size: 14px; }
+.btn.ghost { background: transparent; }
+.btn.danger { color: var(--bad); }
+.btn[disabled] { opacity: .45; cursor: not-allowed; }
+
+/* camera */
+.cam { position: relative; background: #000; border-radius: 14px; overflow: hidden; aspect-ratio: 4 / 3; max-height: 52vh; width: 100%; }
+.cam video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.guide { position: absolute; left: 8%; right: 8%; top: 22%; bottom: 22%; border: 3px solid rgba(245,196,0,.95); border-radius: 10px; box-shadow: 0 0 0 999px rgba(0,0,0,.35); pointer-events: none; transition: border-color .15s; }
+.guide.hit { border-color: #3ddc84; }
+.guide.err { border-color: #ff5a4f; }
+.camhint { position: absolute; left: 0; right: 0; bottom: 8px; text-align: center; color: #fff; font-size: 13px; text-shadow: 0 1px 2px #000; pointer-events: none; padding: 0 12px; }
+.camtools { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; }
+.camtools button { background: rgba(0,0,0,.55); color: #fff; border: 0; border-radius: 999px; padding: 8px 12px; font: 600 13px var(--f-body); cursor: pointer; }
+.camstart { position: absolute; inset: 0; display: grid; place-items: center; gap: 10px; align-content: center; color: #fff; text-align: center; padding: 16px; background: #1b1f22; }
+.camstart p { margin: 0; color: #c9d0d4; font-size: 14px; max-width: 34ch; }
+.camstart .btn { min-height: 64px; font: 700 20px var(--f-display); padding: 0 28px; border-radius: 14px; }
+
+/* current box */
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: grid; gap: 12px; }
+.slots { display: grid; gap: 8px; }
+.slot { display: grid; grid-template-columns: 2.2em 1fr auto; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 10px; background: var(--bg); min-height: 52px; }
+.slot .n { font: 600 13px var(--f-mono); color: var(--muted); }
+.slot .v { font: 600 20px var(--f-mono); letter-spacing: .02em; overflow-wrap: anywhere; min-width: 0; }
+.slot.empty .v { font: 500 14px var(--f-body); color: var(--muted); }
+.slot.filled { background: var(--ok-bg); }
+.slot.filled .v { color: var(--ok); }
+.slot button { border: 0; background: transparent; color: var(--muted); font-size: 20px; cursor: pointer; width: 36px; height: 36px; border-radius: 8px; }
+.status { font-size: 14px; padding: 10px 12px; border-radius: 8px; background: var(--bg); color: var(--muted); }
+.status.ok { background: var(--ok-bg); color: var(--ok); }
+.status.bad { background: var(--bad-bg); color: var(--bad); }
+.status.warn { background: var(--warn-bg); color: var(--warn); }
+.status button { font: 600 13px var(--f-mono); margin-left: 6px; border: 1px solid currentColor; background: transparent; color: inherit; border-radius: 6px; padding: 3px 8px; cursor: pointer; }
+.typein { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+input[type=text], input[type=search], input[type=number] {
+  font: 600 17px var(--f-mono); color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; width: 100%; min-width: 0;
+}
+.toggle { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
+.toggle input { width: 20px; height: 20px; accent-color: var(--ok); }
+
+/* setup sheet */
+.sheet { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: grid; align-items: end; z-index: 30; }
+.sheet .panel {
+  background: var(--surface); border-radius: 18px 18px 0 0; padding: 18px max(16px, env(safe-area-inset-right)) calc(18px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  display: grid; gap: 12px; max-height: 92vh; overflow-y: auto; max-width: 560px; width: 100%; margin: 0 auto;
+}
+.field { display: grid; gap: 4px; }
+.field label { font-size: 13px; font-weight: 600; color: var(--muted); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips button { font: 500 13px var(--f-mono); border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+.ocrnote { font-size: 13px; color: var(--muted); }
+
+/* log */
+.loghead { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.log { display: grid; gap: 8px; }
+.box { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; }
+.box .no { font: 600 13px var(--f-mono); color: var(--muted); padding-top: 2px; }
+.box .meta { min-width: 0; display: grid; gap: 2px; }
+.box .model { font: 600 14px var(--f-mono); overflow-wrap: anywhere; }
+.box .model small { color: var(--muted); font-weight: 500; }
+.box .sn { font: 600 16px var(--f-mono); overflow-wrap: anywhere; }
+.box .time { font-size: 12px; color: var(--muted); }
+.box.hit { outline: 2px solid var(--signal); }
+.empty { border: 1px dashed var(--line); border-radius: 12px; padding: 16px; color: var(--muted); font-size: 14px; }
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 40;
+  background: var(--ink); color: var(--bg); padding: 10px 12px 10px 16px; border-radius: 10px; font-weight: 600; display: flex; gap: 12px; align-items: center; max-width: calc(100% - 32px);
+}
+.toast button { background: var(--signal); color: var(--signal-ink); border: 0; border-radius: 8px; padding: 8px 12px; font-weight: 700; cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <div class="eyebrow">Carton intake · 入庫掃描</div>
+      <h1>Box Serial Scanner</h1>
+    </div>
+    <button class="modelchip" id="modelChip" type="button" aria-label="Change model">
+      <small>Model 型號 · tap to change</small>
+      <b id="modelChipText">Set model</b>
+    </button>
+  </header>
+
+  <section class="tally" aria-label="Totals">
+    <div><span class="eyebrow">Boxes 箱</span><b id="nBoxes">0</b></div>
+    <div><span class="eyebrow">Units 台</span><b id="nUnits">0</b></div>
+  </section>
+
+  <section class="cam" id="cam">
+    <video id="video" playsinline muted autoplay></video>
+    <div class="guide" id="guide"></div>
+    <div class="camtools"><button id="torchBtn" type="button" hidden>Light</button><button id="stopBtn" type="button" hidden>Stop</button></div>
+    <div class="camhint" id="camHint">Point at the LOT barcode stickers</div>
+    <div class="camstart" id="camStart">
+      <button class="btn primary" id="startBtn" type="button">Start scanning</button>
+      <p id="camMsg">Uses the back camera. Hold the phone 15–25 cm from the barcode stickers.</p>
+    </div>
+  </section>
+
+  <section class="card" aria-label="Current box">
+    <div class="row" style="justify-content:space-between">
+      <h2 id="curTitle">Box #1</h2>
+      <label class="toggle"><input type="checkbox" id="autoSave" checked> Save when full</label>
+    </div>
+    <div class="slots" id="slots"></div>
+    <div class="status" id="status">Waiting for the first barcode.</div>
+    <form class="typein" id="typeForm" autocomplete="off">
+      <input type="text" id="typeIn" placeholder="Type a serial if it won't scan" autocapitalize="characters" spellcheck="false" aria-label="Type a serial">
+      <button class="btn small" type="submit">Add</button>
+    </form>
+    <div class="row">
+      <button class="btn primary" id="saveBtn" type="button" style="flex:1">Save box</button>
+      <button class="btn" id="clearCur" type="button">Clear</button>
+    </div>
+  </section>
+
+  <section style="display:grid;gap:10px">
+    <div class="loghead">
+      <h2>Scanned boxes</h2>
+      <div class="row">
+        <button class="btn small" id="shareBtn" type="button" hidden>Share</button>
+        <button class="btn small" id="csvBtn" type="button">CSV</button>
+        <button class="btn small" id="copyBtn" type="button">Copy</button>
+      </div>
+    </div>
+    <input type="search" id="search" placeholder="Find a serial or model" autocomplete="off" aria-label="Search">
+    <div class="log" id="log"></div>
+    <button class="btn small ghost danger" id="clearAll" type="button">Clear all records</button>
+    <p class="ocrnote">Records are kept on this phone only. Export the CSV at the end of each shift.</p>
+  </section>
+</div>
+
+<div class="sheet" id="setup" hidden>
+  <form class="panel" id="setupForm" autocomplete="off">
+    <h2>What's on this pallet?</h2>
+    <div class="field">
+      <label for="sModel">Model 型號</label>
+      <input type="text" id="sModel" placeholder="EH-70F2/USA" autocapitalize="characters" spellcheck="false" required>
+    </div>
+    <div class="grid2">
+      <div class="field">
+        <label for="sCode">Code no.</label>
+        <input type="text" id="sCode" placeholder="EH91921" autocapitalize="characters" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="sQty">Units per box 台/箱</label>
+        <input type="number" id="sQty" min="1" max="20" value="2" inputmode="numeric">
+      </div>
+    </div>
+    <div class="chips" id="recentModels"></div>
+    <div class="row">
+      <button class="btn" type="button" id="ocrBtn">Read label with camera</button>
+      <span class="ocrnote" id="ocrMsg">Point the camera at the white model label first.</span>
+    </div>
+    <div class="row">
+      <button class="btn primary" type="submit" style="flex:1">Use this model</button>
+      <button class="btn" type="button" id="setupCancel">Cancel</button>
+    </div>
+  </form>
+</div>
+
+<div class="toast" id="toast" hidden><span id="toastMsg"></span><button id="toastAct" type="button" hidden>Undo</button></div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const K = { rec: "boxscan.records.v1", set: "boxscan.settings.v1", models: "boxscan.models.v1" };
+  const load = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
+  const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { toast("Phone storage is full or blocked — export now"); } };
+  const norm = (s) => String(s || "").trim().toUpperCase().replace(/^\*+|\*+$/g, "").replace(/\s+/g, "");
+  const shape = (s) => norm(s).replace(/[A-Z]/g, "A").replace(/[0-9]/g, "9");
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  let records = load(K.rec, []);                       // newest first
+  let settings = load(K.set, { model: "", code: "", qty: 2, autoSave: true });
+  let recentModels = load(K.models, []);
+  let cur = [];                                         // serials in the box being scanned
+  let stream = null, scanning = false, busy = false, detector = null, torchOn = false;
+  const lastSeen = new Map();                           // code -> time, to debounce warnings
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+
+  // ---------- feedback ----------
+  let ac = null;
+  function beep(ok) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = "square"; o.frequency.value = ok ? 1650 : 220;
+      g.gain.setValueAtTime(0.08, ac.currentTime); g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + (ok ? 0.12 : 0.35));
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + (ok ? 0.12 : 0.35));
+    } catch {}
+    try { navigator.vibrate && navigator.vibrate(ok ? 60 : [120, 60, 120]); } catch {}
+    const gd = $("guide"); gd.className = "guide " + (ok ? "hit" : "err"); setTimeout(() => gd.className = "guide", 350);
+  }
+  let toastT;
+  function toast(msg, action) {
+    $("toastMsg").textContent = msg; $("toast").hidden = false;
+    const b = $("toastAct"); b.hidden = !action; b.onclick = action ? () => { $("toast").hidden = true; action(); } : null;
+    clearTimeout(toastT); toastT = setTimeout(() => $("toast").hidden = true, action ? 5000 : 2600);
+  }
+  function status(cls, html) { const s = $("status"); s.className = "status " + cls; s.innerHTML = html; }
+
+  // ---------- decoding ----------
+  let zxReader = null;
+  function zx() {
+    if (zxReader || !window.ZXing) return zxReader;
+    const Z = ZXing, F = Z.BarcodeFormat, hints = new Map();
+    hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [F.CODE_39, F.CODE_128, F.CODE_93, F.ITF, F.CODABAR, F.EAN_13, F.EAN_8, F.UPC_A]);
+    hints.set(Z.DecodeHintType.TRY_HARDER, true);
+    zxReader = new Z.MultiFormatReader(); zxReader.setHints(hints); return zxReader;
+  }
+  function grayOf(c) {
+    const { width: w, height: h } = c, d = c.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+    const g = new Uint8ClampedArray(w * h);
+    for (let i = 0, j = 0; i < g.length; i++, j += 4) g[i] = (d[j] * 306 + d[j + 1] * 601 + d[j + 2] * 117) >> 10;
+    return { g, w, h };
+  }
+  function zxDecode(g, w, h) {
+    const r = zx(); if (!r || w < 40 || h < 40) return null;
+    try { const res = r.decodeWithState(new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(new ZXing.RGBLuminanceSource(g, w, h)))); return res ? res.getText() : null; }
+    catch { return null; }
+  }
+  // Regions with dense vertical bars: strong left-right contrast, weak up-down contrast.
+  function findBarcodeRegions({ g, w: W, h: H }) {
+    const B = 12, bw = Math.floor(W / B), bh = Math.floor(H / B), sx = new Float32Array(bw * bh), sy = new Float32Array(bw * bh);
+    for (let y = 0; y < bh * B - 1; y++) {
+      const row = ((y / B) | 0) * bw;
+      for (let x = 0; x < bw * B - 1; x++) { const i = y * W + x, k = row + ((x / B) | 0); sx[k] += Math.abs(g[i + 1] - g[i]); sy[k] += Math.abs(g[i + W] - g[i]); }
+    }
+    const A = B * B, mark = new Uint8Array(bw * bh);
+    for (let k = 0; k < mark.length; k++) { const a = sx[k] / A, v = sy[k] / A; if (a > 14 && a > 2 * v) mark[k] = 1; }
+    const seen = new Uint8Array(bw * bh), out = [];
+    for (let k = 0; k < mark.length; k++) {
+      if (!mark[k] || seen[k]) continue;
+      const st = [k]; seen[k] = 1; let x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1, cnt = 0;
+      while (st.length) {
+        const q = st.pop(), qx = q % bw, qy = (q / bw) | 0; cnt++;
+        if (qx < x0) x0 = qx; if (qx > x1) x1 = qx; if (qy < y0) y0 = qy; if (qy > y1) y1 = qy;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [2, 0], [-2, 0], [0, 1], [0, -1]]) {
+          const nx = qx + dx, ny = qy + dy; if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+          const nk = ny * bw + nx; if (mark[nk] && !seen[nk]) { seen[nk] = 1; st.push(nk); }
+        }
+      }
+      const rw = (x1 - x0 + 1) * B, rh = (y1 - y0 + 1) * B;
+      if (cnt >= 4 && rw >= rh * 1.2) {
+        const px = Math.round(rw * 0.15) + B, x = Math.max(0, x0 * B - px), y = Math.max(0, y0 * B - B);
+        out.push({ x, y, w: Math.min(W - x, rw + 2 * px), h: Math.min(H - y, rh + 2 * B), cnt });
+      }
+    }
+    return out.sort((a, b) => b.cnt - a.cnt).slice(0, 6);
+  }
+  function decodeRegion(src, r) {
+    const base = Math.min(4, Math.max(1, 700 / r.w));
+    for (const s of [base, base * 1.6]) {
+      const c = document.createElement("canvas"); c.width = Math.round(r.w * s); c.height = Math.round(r.h * s);
+      const ctx = c.getContext("2d", { willReadFrequently: true }); ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(src, r.x, r.y, r.w, r.h, 0, 0, c.width, c.height);
+      const { g, w, h } = grayOf(c), t = zxDecode(g, w, h); if (t) return t;
+    }
+    return null;
+  }
+  function decodeCanvas(c) {
+    const found = new Set(), gimg = grayOf(c);
+    const whole = zxDecode(gimg.g, gimg.w, gimg.h); if (whole) found.add(norm(whole));
+    for (const r of findBarcodeRegions(gimg)) {
+      const parts = [r];
+      if (r.h > r.w * 0.35) { const sh = Math.round(r.w * 0.3), step = Math.round(sh / 2); for (let y = r.y; y + step < r.y + r.h; y += step) parts.push({ x: r.x, y, w: r.w, h: Math.min(sh, r.y + r.h - y) }); }
+      for (const p of parts) { const t = decodeRegion(c, p); if (t) found.add(norm(t)); }
+    }
+    return [...found];
+  }
+
+  // ---------- camera ----------
+  const frame = document.createElement("canvas");
+  function guideCrop() {
+    // Map the on-screen guide box to video pixels (the video is shown with object-fit: cover).
+    const v = $("video"), vw = v.videoWidth, vh = v.videoHeight, cw = v.clientWidth, ch = v.clientHeight;
+    const s = Math.max(cw / vw, ch / vh), visW = cw / s, visH = ch / s, ox = (vw - visW) / 2, oy = (vh - visH) / 2;
+    const gr = $("guide").getBoundingClientRect(), vr = v.getBoundingClientRect();
+    // Read a little beyond the guide so stickers at its edge still count.
+    const x = ox + (gr.left - vr.left) / s, y = oy + (gr.top - vr.top) / s, w = gr.width / s, h = gr.height / s;
+    const px = w * 0.05, py = h * 0.15;
+    const X = Math.max(0, x - px), Y = Math.max(0, y - py);
+    return { x: X, y: Y, w: Math.min(vw - X, w + 2 * px), h: Math.min(vh - Y, h + 2 * py) };
+  }
+  async function startCamera() {
+    $("camMsg").textContent = "Starting camera…";
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } });
+    } catch (e) {
+      $("camMsg").textContent = e && e.name === "NotAllowedError"
+        ? "Camera access was blocked. Allow the camera for this site in your browser settings, then tap Start again."
+        : (location.protocol !== "https:" && location.hostname !== "localhost")
+          ? "The camera only works when this page is opened from an https:// address."
+          : "No camera found or it is in use by another app.";
+      return;
+    }
+    const v = $("video"); v.srcObject = stream; await v.play().catch(() => {});
+    const track = stream.getVideoTracks()[0];
+    try { const caps = track.getCapabilities ? track.getCapabilities() : {};
+      if (caps.focusMode && caps.focusMode.includes("continuous")) track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {});
+      $("torchBtn").hidden = !caps.torch;
+    } catch {}
+    if ("BarcodeDetector" in window) {
+      try { const fm = await BarcodeDetector.getSupportedFormats(); const want = ["code_39", "code_128", "code_93", "itf", "codabar", "ean_13", "ean_8", "upc_a"].filter((f) => fm.includes(f)); if (want.length) detector = new BarcodeDetector({ formats: want }); } catch { detector = null; }
+    }
+    $("camStart").hidden = true; $("stopBtn").hidden = false;
+    scanning = true; loop();
+    try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch {}
+  }
+  function stopCamera() {
+    scanning = false;
+    if (stream) stream.getTracks().forEach((t) => t.stop()); stream = null;
+    $("camStart").hidden = false; $("stopBtn").hidden = true; $("torchBtn").hidden = true; $("camMsg").textContent = "Camera stopped.";
+  }
+  async function loop() {
+    if (!scanning) return;
+    const v = $("video");
+    if (!busy && v.readyState >= 2 && v.videoWidth) {
+      busy = true;
+      try {
+        const r = guideCrop();
+        frame.width = Math.round(r.w); frame.height = Math.round(r.h);
+        frame.getContext("2d", { willReadFrequently: true }).drawImage(v, r.x, r.y, r.w, r.h, 0, 0, frame.width, frame.height);
+        let codes = [];
+        if (detector) { try { codes = (await detector.detect(frame)).map((b) => norm(b.rawValue)).filter(Boolean); } catch {} }
+        if (!codes.length) codes = decodeCanvas(frame);
+        codes.forEach(onCode);
+      } finally { busy = false; }
+    }
+    setTimeout(loop, 120);
+  }
+
+  // ---------- scan logic ----------
+  function knownShapes() { const s = new Set(); records.slice(0, 50).forEach((r) => r.serials.forEach((x) => s.add(shape(x)))); return s; }
+  function ownerOf(code) { const i = records.findIndex((r) => r.serials.includes(code)); return i < 0 ? null : { r: records[i], n: records.length - i }; }
+  function throttled(code, ms) { const t = Date.now(), last = lastSeen.get(code) || 0; if (t - last < ms) return true; lastSeen.set(code, t); return false; }
+
+  function onCode(code, typed) {
+    if (!code || cur.includes(code)) return;
+    if (code === norm(settings.model) || code === norm(settings.code)) return;
+    const own = ownerOf(code);
+    if (own) {
+      // The box just saved is usually still in front of the camera: no alarm for that one.
+      if (own.n === records.length && Date.now() - own.r.createdAt < 20000) {
+        if (!throttled("__justsaved", 3000)) status("", `Box #${own.n} saved. Move to the next box.`);
+        return;
+      }
+      if (!throttled(code, 3000)) { beep(false); status("bad", `<b class="mono">${esc(code)}</b> is already saved in box #${own.n}.`); }
+      return;
+    }
+    const shapes = knownShapes();
+    if (!typed && shapes.size && !shapes.has(shape(code))) {
+      if (!throttled(code, 4000)) status("warn", `Different kind of code: <span class="mono">${esc(code)}</span> <button type="button" data-use="${esc(code)}">Use it</button>`);
+      return;
+    }
+    if (cur.length >= settings.qty) { if (!throttled("__full", 3000)) status("warn", "This box is full. Save it or clear a serial."); return; }
+    cur.push(code); beep(true);
+    status("ok", `Read <b class="mono">${esc(code)}</b>` + (cur.length < settings.qty ? ` — now scan unit ${cur.length + 1}` : ""));
+    renderCur();
+    if (cur.length === settings.qty && settings.autoSave) setTimeout(() => { if (cur.length === settings.qty) saveBox(); }, 500);
+  }
+
+  function saveBox() {
+    if (!settings.model) { openSetup(); return; }
+    if (cur.length !== settings.qty) return;
+    const rec = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), model: settings.model, code: settings.code, serials: cur.slice(), createdAt: Date.now() };
+    records.unshift(rec); store(K.rec, records);
+    const saved = cur.slice(); cur = [];
+    renderCur(); renderLog();
+    status("", `Box #${records.length} saved. Scan the next box.`);
+    toast(`Saved box #${records.length}`, () => {
+      records = records.filter((r) => r.id !== rec.id); store(K.rec, records);
+      cur = saved; renderCur(); renderLog(); status("warn", "Save undone. Fix the serials, then save again.");
+    });
+  }
+
+  // ---------- render ----------
+  function renderCur() {
+    const q = settings.qty;
+    $("curTitle").textContent = `Box #${records.length + 1}`;
+    let html = "";
+    for (let i = 0; i < q; i++) {
+      const v = cur[i];
+      html += `<div class="slot ${v ? "filled" : "empty"}"><span class="n">${i + 1}</span><span class="v">${v ? esc(v) : (i === cur.length ? "Scan serial 機號 " + (i + 1) : "Waiting")}</span>${v ? `<button type="button" data-rm="${i}" aria-label="Remove serial ${i + 1}">×</button>` : "<span></span>"}</div>`;
+    }
+    $("slots").innerHTML = html;
+    const full = cur.length === q;
+    $("saveBtn").disabled = !full;
+    $("saveBtn").textContent = full ? `Save box · ${q}台` : `${cur.length} of ${q} scanned`;
+    $("autoSave").checked = settings.autoSave;
+    $("modelChipText").textContent = settings.model || "Set model";
+  }
+  const fmtTime = (ms) => { const d = new Date(ms), today = new Date().toDateString() === d.toDateString();
+    return (today ? "" : d.toLocaleDateString([], { month: "short", day: "numeric" }) + " ") + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); };
+  let pendingDelete = null;
+  function renderLog() {
+    const units = records.reduce((n, r) => n + r.serials.length, 0);
+    $("nBoxes").textContent = records.length; $("nUnits").textContent = units;
+    $("curTitle").textContent = `Box #${records.length + 1}`;
+    const q = norm($("search").value);
+    const list = records.map((r, i) => ({ r, n: records.length - i })).filter(({ r }) => !q || [r.model, r.code, ...r.serials].some((x) => norm(x).includes(q)));
+    if (!records.length) { $("log").innerHTML = `<div class="empty">No boxes yet. Set the model, tap <b>Start scanning</b> and point at the barcode stickers. Each box saves once all its serials are read.</div>`; return; }
+    if (!list.length) { $("log").innerHTML = `<div class="empty">No box matches “${esc($("search").value)}”.</div>`; return; }
+    $("log").innerHTML = list.slice(0, 300).map(({ r, n }) => `
+      <div class="box${q && r.serials.includes(q) ? " hit" : ""}">
+        <span class="no">#${n}</span>
+        <div class="meta"><div class="model">${esc(r.model)} <small>${esc(r.code)}</small></div>
+          ${r.serials.map((s) => `<div class="sn">${esc(s)}</div>`).join("")}
+          <div class="time">${fmtTime(r.createdAt)}</div></div>
+        <button class="btn small ghost danger" type="button" data-del="${r.id}">${pendingDelete === r.id ? "Confirm" : "Delete"}</button>
+      </div>`).join("");
+  }
+
+  // ---------- setup ----------
+  function openSetup() {
+    $("sModel").value = settings.model; $("sCode").value = settings.code; $("sQty").value = settings.qty;
+    $("recentModels").innerHTML = recentModels.map((m, i) => `<button type="button" data-recent="${i}">${esc(m.model)}${m.code ? " · " + esc(m.code) : ""}</button>`).join("");
+    $("ocrMsg").textContent = stream ? "Point the camera at the white model label, then tap." : "Start the camera first to read the label.";
+    $("setup").hidden = false;
+  }
+  $("setupForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const model = norm($("sModel").value); if (!model) return;
+    const code = norm($("sCode").value), qty = Math.min(20, Math.max(1, parseInt($("sQty").value, 10) || 2));
+    settings = { ...settings, model, code, qty }; store(K.set, settings);
+    recentModels = [{ model, code, qty }, ...recentModels.filter((m) => m.model !== model)].slice(0, 6); store(K.models, recentModels);
+    if (cur.length > qty) cur = cur.slice(0, qty);
+    $("setup").hidden = true; renderCur();
+  });
+  $("setupCancel").addEventListener("click", () => { if (settings.model) $("setup").hidden = true; });
+  $("recentModels").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-recent]"); if (!b) return;
+    const m = recentModels[+b.dataset.recent]; $("sModel").value = m.model; $("sCode").value = m.code || ""; $("sQty").value = m.qty || 2;
+  });
+
+  // Optional: read the printed model label with on-device text recognition.
+  let tesseractWorker = null;
+  $("ocrBtn").addEventListener("click", async () => {
+    const v = $("video");
+    if (!stream || !v.videoWidth) { $("ocrMsg").textContent = "Start the camera first, then point it at the white model label."; return; }
+    const btn = $("ocrBtn"); btn.disabled = true;
+    try {
+      if (!window.Tesseract) {
+        $("ocrMsg").textContent = "Loading text reader (first time only, about 10 MB)…";
+        await new Promise((res, rej) => { const s = document.createElement("script"); s.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+      }
+      if (!tesseractWorker) tesseractWorker = await Tesseract.createWorker("eng");
+      $("ocrMsg").textContent = "Reading label…";
+      const c = document.createElement("canvas"); c.width = v.videoWidth; c.height = v.videoHeight; c.getContext("2d").drawImage(v, 0, 0);
+      const { data } = await tesseractWorker.recognize(c);
+      const text = (data.text || "").toUpperCase();
+      const models = (text.match(/\b[A-Z]{1,4}-[A-Z0-9]{2,}(?:\/[A-Z]{2,4})?\b/g) || []).filter((m) => /\d/.test(m));
+      const model = models.sort((a, b) => (b.includes("/") - a.includes("/")) || b.length - a.length)[0];
+      const codeM = text.match(/CODE\s*N[O0]\.?\s*:?\s*([A-Z]{1,3}\s?\d{4,})/) || text.match(/\b([A-Z]{2}\d{5})\b/);
+      if (model) $("sModel").value = model;
+      if (codeM) $("sCode").value = codeM[1].replace(/\s/g, "");
+      $("ocrMsg").textContent = model || codeM ? "Filled from the label — check it before saving." : "Couldn't find a model number. Move closer to the white label and try again, or type it.";
+    } catch {
+      $("ocrMsg").textContent = "The text reader needs an internet connection the first time. Type the model instead.";
+    } finally { btn.disabled = false; }
+  });
+
+  // ---------- export ----------
+  function rows() {
+    const out = [["Box", "Model", "Code", "Unit", "Serial", "Scanned"]];
+    records.slice().reverse().forEach((r, i) => r.serials.forEach((s, j) => {
+      const d = new Date(r.createdAt), p = (n) => String(n).padStart(2, "0");
+      out.push([i + 1, r.model, r.code, j + 1, s, `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`]);
+    }));
+    return out;
+  }
+  const csvText = () => "﻿" + rows().map((r) => r.map((c) => /[",\n]/.test(String(c)) ? `"${String(c).replace(/"/g, '""')}"` : c).join(",")).join("\r\n");
+  const fileName = () => `box-serials-${new Date().toISOString().slice(0, 10)}.csv`;
+  $("csvBtn").addEventListener("click", () => {
+    if (!records.length) { toast("Nothing to export yet"); return; }
+    const url = URL.createObjectURL(new Blob([csvText()], { type: "text/csv" }));
+    const a = document.createElement("a"); a.href = url; a.download = fileName(); document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  });
+  if (navigator.canShare && navigator.canShare({ files: [new File(["x"], "t.csv", { type: "text/csv" })] })) $("shareBtn").hidden = false;
+  $("shareBtn").addEventListener("click", async () => {
+    if (!records.length) { toast("Nothing to share yet"); return; }
+    try { await navigator.share({ files: [new File([csvText()], fileName(), { type: "text/csv" })], title: "Box serials" }); } catch {}
+  });
+  $("copyBtn").addEventListener("click", async () => {
+    if (!records.length) { toast("Nothing to copy yet"); return; }
+    try { await navigator.clipboard.writeText(rows().map((r) => r.join("\t")).join("\n")); toast("Copied — paste into Excel"); }
+    catch { toast("Copy blocked — use CSV"); }
+  });
+
+  // ---------- events ----------
+  $("startBtn").addEventListener("click", () => { if (!settings.model) openSetup(); startCamera(); });
+  $("stopBtn").addEventListener("click", stopCamera);
+  $("torchBtn").addEventListener("click", async () => {
+    try { torchOn = !torchOn; await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ torch: torchOn }] }); $("torchBtn").textContent = torchOn ? "Light off" : "Light"; } catch {}
+  });
+  $("modelChip").addEventListener("click", openSetup);
+  $("autoSave").addEventListener("change", (e) => { settings.autoSave = e.target.checked; store(K.set, settings); if (settings.autoSave && cur.length === settings.qty) saveBox(); });
+  $("saveBtn").addEventListener("click", saveBox);
+  $("clearCur").addEventListener("click", () => { cur = []; renderCur(); status("", "Cleared. Scan this box again."); });
+  $("slots").addEventListener("click", (e) => { const b = e.target.closest("[data-rm]"); if (!b) return; cur.splice(+b.dataset.rm, 1); renderCur(); });
+  $("status").addEventListener("click", (e) => { const b = e.target.closest("[data-use]"); if (b) onCode(b.dataset.use, true); });
+  $("typeForm").addEventListener("submit", (e) => { e.preventDefault(); const v = norm($("typeIn").value); if (!v) return; $("typeIn").value = ""; onCode(v, true); });
+  $("search").addEventListener("input", renderLog);
+  $("log").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-del]"); if (!b) return; const id = b.dataset.del;
+    if (pendingDelete !== id) { pendingDelete = id; renderLog(); setTimeout(() => { if (pendingDelete === id) { pendingDelete = null; renderLog(); } }, 4000); return; }
+    pendingDelete = null; records = records.filter((r) => r.id !== id); store(K.rec, records); renderLog(); renderCur(); toast("Box deleted");
+  });
+  let clearArmed = false;
+  $("clearAll").addEventListener("click", () => {
+    if (!records.length) return;
+    if (!clearArmed) { clearArmed = true; $("clearAll").textContent = `Tap again to delete all ${records.length} boxes`; setTimeout(() => { clearArmed = false; $("clearAll").textContent = "Clear all records"; }, 4000); return; }
+    clearArmed = false; records = []; store(K.rec, records); renderLog(); renderCur(); $("clearAll").textContent = "Clear all records"; toast("All records cleared");
+  });
+  document.addEventListener("visibilitychange", () => { if (document.hidden && stream) stopCamera(); });
+
+  renderCur(); renderLog();
+  if (!settings.model) openSetup();
+  if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
+})();
+</script>
+</body>
+</html>
